@@ -1,33 +1,48 @@
-import {
-  calculateElapsedTime,
-  formatTime,
-  getStatus,
-  useTimeStore,
-} from "@/stores/useTimeStore";
+
+
 import { COLORS_LIGHT } from "@/theme/colors";
+import * as FileSystem from "expo-file-system";
 import { Clock, LogIn, LogOut, Settings } from "lucide-react-native";
-import React, { useEffect } from "react";
-import {
-  ActivityIndicator,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import React, { useEffect, useState } from "react";
+import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+interface TimeRecord {
+  date: string; // YYYY-MM-DD
+  checkInTime: string; // ISO string
+  checkOutTime?: string; // ISO string
+  totalMinutes?: number;
+}
+
+const STORAGE_FILE = `timeRecords.json`;
+
+// Storage helper functions
+const saveRecords = async (records: TimeRecord[]) => {
+  try {
+    await FileSystem.writeAsStringAsync(STORAGE_FILE, JSON.stringify(records));
+  } catch (error) {
+    console.error("Error saving records:", error);
+  }
+};
+
+const loadRecords = async (): Promise<TimeRecord[]> => {
+  try {
+    const fileInfo = await FileSystem.getInfoAsync(STORAGE_FILE);
+    if (fileInfo.exists) {
+      const content = await FileSystem.readAsStringAsync(STORAGE_FILE);
+      return JSON.parse(content);
+    }
+  } catch (error) {
+    console.error("Error loading records:", error);
+  }
+  return [];
+};
+
 export default function HomeScreen() {
-  const {
-    isCheckedIn,
-    checkInTime,
-    checkOutTime,
-    isLoading,
-    loadTodayData,
-    checkIn,
-    checkOut,
-    undoCheckout,
-    cleanOldRecords,
-  } = useTimeStore();
+  const [isCheckedIn, setIsCheckedIn] = useState(false);
+  const [checkInTime, setCheckInTime] = useState<string | null>(null);
+  const [checkOutTime, setCheckOutTime] = useState<string | null>(null);
+  const [currentTime, setCurrentTime] = useState(new Date());
 
   // Get current date
   const now = new Date();
@@ -36,30 +51,132 @@ export default function HomeScreen() {
     month: "short",
     day: "numeric",
   });
+  const todayDate = now.toISOString().split("T")[0]; // YYYY-MM-DD
 
-  // Load today's data on mount and clean old records
+  // Load today's data on mount
   useEffect(() => {
     loadTodayData();
-    cleanOldRecords(); // Removes last month's data on 5th of month
   }, []);
 
-  const status = getStatus(isCheckedIn, checkOutTime);
-  
-  // Calculate elapsed time on every render (no timer needed)
-  const elapsedTime = calculateElapsedTime(
-    checkInTime,
-    checkOutTime,
-    new Date() // Always use current time for live calculation
-  );
+  // Update current time every second when checked in
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | undefined;
+    if (isCheckedIn && !checkOutTime) {
+      interval = setInterval(() => {
+        setCurrentTime(new Date());
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isCheckedIn, checkOutTime]);
 
-  const handleButtonPress = () => {
-    if (checkOutTime) return; // Already completed
-    if (isCheckedIn) {
-      checkOut();
-    } else {
-      checkIn();
+  const loadTodayData = async () => {
+    try {
+      const records = await loadRecords();
+      const todayRecord = records.find((r) => r.date === todayDate);
+
+      if (todayRecord) {
+        setCheckInTime(todayRecord.checkInTime);
+        setCheckOutTime(todayRecord.checkOutTime || null);
+        setIsCheckedIn(!!todayRecord.checkInTime);
+      }
+    } catch (error) {
+      console.error("Error loading data:", error);
     }
   };
+
+  const handleCheckIn = async () => {
+    try {
+      const now = new Date().toISOString();
+      setCheckInTime(now);
+      setIsCheckedIn(true);
+      setCheckOutTime(null);
+
+      // Save to storage
+      const records = await loadRecords();
+
+      // Remove any existing record for today
+      const filteredRecords = records.filter((r) => r.date !== todayDate);
+
+      // Add new record
+      filteredRecords.push({
+        date: todayDate,
+        checkInTime: now,
+      });
+
+      await saveRecords(filteredRecords);
+    } catch (error) {
+      console.error("Error checking in:", error);
+    }
+  };
+
+  const handleCheckOut = async () => {
+    try {
+      const now = new Date().toISOString();
+      setCheckOutTime(now);
+
+      if (!checkInTime) return;
+
+      // Calculate total minutes
+      const checkInDate = new Date(checkInTime);
+      const checkOutDate = new Date(now);
+      const totalMinutes = Math.floor(
+        (checkOutDate.getTime() - checkInDate.getTime()) / 1000 / 60
+      );
+
+      // Update storage
+      const records = await loadRecords();
+
+      const updatedRecords = records.map((r) =>
+        r.date === todayDate
+          ? { ...r, checkOutTime: now, totalMinutes }
+          : r
+      );
+
+      await saveRecords(updatedRecords);
+    } catch (error) {
+      console.error("Error checking out:", error);
+    }
+  };
+
+  // Format time as HH:MM AM/PM
+  const formatTime = (isoString: string | null) => {
+    if (!isoString) return "--:--";
+    const date = new Date(isoString);
+    return date.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    });
+  };
+
+  // Calculate elapsed time
+  const calculateElapsedTime = () => {
+    if (!checkInTime) return "0h 00m";
+
+    const start = new Date(checkInTime);
+    const end = checkOutTime ? new Date(checkOutTime) : currentTime;
+    const diffMs = end.getTime() - start.getTime();
+    const diffMinutes = Math.floor(diffMs / 1000 / 60);
+    const hours = Math.floor(diffMinutes / 60);
+    const minutes = diffMinutes % 60;
+    const seconds = Math.floor((diffMs / 1000) % 60);
+
+    if (checkOutTime) {
+      return `${hours}h ${minutes.toString().padStart(2, "0")}m`;
+    }
+    return `${hours}h ${minutes.toString().padStart(2, "0")}m ${seconds.toString().padStart(2, "0")}s`;
+  };
+
+  // Determine status
+  const getStatus = () => {
+    if (checkOutTime) return { text: "Logged Out", color: COLORS_LIGHT.textMuted };
+    if (isCheckedIn) return { text: "Logged In", color: COLORS_LIGHT.success };
+    return { text: "Not Logged In", color: COLORS_LIGHT.textMuted };
+  };
+
+  const status = getStatus();
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -93,43 +210,29 @@ export default function HomeScreen() {
             isCheckedIn && !checkOutTime && styles.checkButtonOut,
           ]}
           activeOpacity={0.8}
-          onPress={handleButtonPress}
-          disabled={!!checkOutTime || isLoading}
+          onPress={
+            checkOutTime
+              ? undefined
+              : isCheckedIn
+              ? handleCheckOut
+              : handleCheckIn
+          }
+          disabled={!!checkOutTime}
         >
-          {isLoading ? (
-            <ActivityIndicator
-              size="large"
-              color={COLORS_LIGHT.primaryForeground}
-            />
+          {isCheckedIn && !checkOutTime ? (
+            <>
+              <LogOut size={40} color={COLORS_LIGHT.primaryForeground} />
+              <Text style={styles.checkLabel}>Check Out</Text>
+            </>
           ) : (
             <>
-              {isCheckedIn && !checkOutTime ? (
-                <>
-                  <LogOut size={40} color={COLORS_LIGHT.primaryForeground} />
-                  <Text style={styles.checkLabel}>Check Out</Text>
-                </>
-              ) : (
-                <>
-                  <LogIn size={40} color={COLORS_LIGHT.primaryForeground} />
-                  <Text style={styles.checkLabel}>
-                    {checkOutTime ? "Completed" : "Check In"}
-                  </Text>
-                </>
-              )}
+              <LogIn size={40} color={COLORS_LIGHT.primaryForeground} />
+              <Text style={styles.checkLabel}>
+                {checkOutTime ? "Completed" : "Check In"}
+              </Text>
             </>
           )}
         </TouchableOpacity>
-
-        {/* Undo Button - Only show if checked out today */}
-        {checkOutTime && (
-          <TouchableOpacity
-            style={styles.undoButton}
-            onPress={undoCheckout}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.undoText}>Undo Checkout</Text>
-          </TouchableOpacity>
-        )}
 
         {/* Stats Card */}
         <View style={styles.statsCard}>
@@ -157,7 +260,7 @@ export default function HomeScreen() {
             <Text style={[styles.statsLabel, { color: COLORS_LIGHT.primary }]}>
               TOTAL
             </Text>
-            <Text style={styles.statsTotal}>{elapsedTime}</Text>
+            <Text style={styles.statsTotal}>{calculateElapsedTime()}</Text>
           </View>
         </View>
       </View>
@@ -188,7 +291,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     position: "relative",
-    marginBottom: 32,
+    // marginBottom: 1,
   },
   headerDate: {
     fontSize: 18,
@@ -229,7 +332,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 16,
     paddingVertical: 8,
-    marginTop: 16,
+    // marginTop: ,
     borderWidth: 1,
     borderColor: COLORS_LIGHT.borderLight,
     alignSelf: "center",
@@ -274,23 +377,6 @@ const styles = StyleSheet.create({
     color: COLORS_LIGHT.primaryForeground,
     fontSize: 17,
     fontWeight: "600",
-  },
-
-  // Undo Button
-  undoButton: {
-    alignSelf: "center",
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    marginTop: 16,
-    backgroundColor: COLORS_LIGHT.surface,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS_LIGHT.warning,
-  },
-  undoText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: COLORS_LIGHT.warning,
   },
 
   // Stats Card
