@@ -2,31 +2,56 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+export enum AttendanceStatus {
+  present = "present",
+  absent = "absent",
+  inProgress = "inProgress",
+  halfDay = "half-day",
+  holiday = "holiday",
+}
+
 export interface TimeRecord {
+  id?: string;
   date: string; // YYYY-MM-DD
   checkInTime: string; // ISO string
   checkOutTime?: string; // ISO string
+  attendanceStatus?: AttendanceStatus;
   totalMinutes?: number;
+  entryExitTotalMinutes?: number;
+  sessions?: TimeSession[];
+}
+
+export interface TimeSession {
+  checkIn: string;
+  checkOut: string | null;
+  sessionMinutes: number;
 }
 
 interface TimeState {
   // State
-  records: TimeRecord[]; // Persistent storage (current month only)
+  records: TimeRecord[];
   isCheckedIn: boolean;
   checkInTime: string | null;
   checkOutTime: string | null;
   isLoading: boolean;
   error: string | null;
+  hasHydrated: boolean; // Track if persisted state has loaded
 
   // Actions
+  checkIn: () => void; // Local check-in (offline-first)
+  checkOut: () => void; // Local check-out (offline-first)
   loadTodayData: () => void;
-  checkIn: () => void;
-  checkOut: () => void;
-  undoCheckout: () => void; // Undo accidental checkout (same day only)
+  replaceRecords: (records: TimeRecord[]) => void;
+  upsertRecord: (record: TimeRecord) => void;
+  setLoading: (isLoading: boolean) => void;
+  setError: (message: string | null) => void;
+  allowAnotherCheckIn: () => void;
+  undoCheckout: () => void; // Backward-compatible alias for allowAnotherCheckIn
   reset: () => void;
-  cleanOldRecords: () => void; // Removes last month's data on 5th of month
+  cleanOldRecords: () => void; // Legacy local cleanup; do not use for backend history
   getAllRecords: () => TimeRecord[]; // For API sync
   clearAllRecords: () => void; // For testing/reset
+  setHasHydrated: (state: boolean) => void;
 }
 
 const getTodayDate = (): string => {
@@ -83,6 +108,57 @@ export const useTimeStore = create<TimeState>()(
       checkOutTime: null,
       isLoading: false,
       error: null,
+      hasHydrated: false,
+
+      // Set hydration state
+      setHasHydrated: (state: boolean) => {
+        set({ hasHydrated: state });
+      },
+
+      // Local offline check-in — creates a fresh record for today
+      checkIn: () => {
+        const now = new Date();
+        const todayDate = getTodayDate();
+        const checkInTime = now.toISOString();
+        const newRecord: TimeRecord = { date: todayDate, checkInTime };
+        const { records } = get();
+        const filtered = records.filter((r) => r.date !== todayDate);
+        set({
+          records: [newRecord, ...filtered],
+          isCheckedIn: true,
+          checkInTime,
+          checkOutTime: null,
+          error: null,
+        });
+      },
+
+      // Local offline check-out — closes today's record
+      checkOut: () => {
+        const { records, checkInTime } = get();
+        const todayDate = getTodayDate();
+        const todayRecord = records.find((r) => r.date === todayDate);
+        if (!todayRecord) return;
+        const now = new Date();
+        const checkOutTime = now.toISOString();
+        const checkInMs = checkInTime
+          ? new Date(checkInTime).getTime()
+          : now.getTime();
+        const totalMinutes = Math.round((now.getTime() - checkInMs) / 60000);
+        const updatedRecord: TimeRecord = {
+          ...todayRecord,
+          checkOutTime,
+          totalMinutes,
+        };
+        const updatedRecords = records.map((r) =>
+          r.date === todayDate ? updatedRecord : r,
+        );
+        set({
+          records: updatedRecords,
+          isCheckedIn: false,
+          checkOutTime,
+          error: null,
+        });
+      },
 
       // Load today's data from persistent records
       loadTodayData: () => {
@@ -94,92 +170,72 @@ export const useTimeStore = create<TimeState>()(
           set({
             checkInTime: todayRecord.checkInTime,
             checkOutTime: todayRecord.checkOutTime || null,
-            isCheckedIn: !!todayRecord.checkInTime,
+            isCheckedIn: !!todayRecord.checkInTime && !todayRecord.checkOutTime,
+          });
+        } else {
+          // No record for today - reset to fresh state
+          // Previous day's records remain in storage but UI starts fresh
+          set({
+            checkInTime: null,
+            checkOutTime: null,
+            isCheckedIn: false,
           });
         }
       },
 
-      // Check in
-      checkIn: () => {
-        const { records } = get();
-        const now = new Date().toISOString();
-        const todayDate = getTodayDate();
+      replaceRecords: (records: TimeRecord[]) => {
+        set({ records, isLoading: false, error: null });
+        get().loadTodayData();
+      },
 
-        // Update state immediately
+      upsertRecord: (record: TimeRecord) => {
+        const records = get().records.filter((r) => r.date !== record.date);
         set({
-          checkInTime: now,
-          isCheckedIn: true,
-          checkOutTime: null,
+          records: [record, ...records],
+          checkInTime: record.checkInTime,
+          checkOutTime: record.checkOutTime || null,
+          isCheckedIn: !!record.checkInTime && !record.checkOutTime,
+          isLoading: false,
+          error: null,
         });
-
-        // Update records
-        const filteredRecords = records.filter((r) => r.date !== todayDate);
-        const updatedRecords = [
-          ...filteredRecords,
-          {
-            date: todayDate,
-            checkInTime: now,
-          },
-        ];
-
-        set({ records: filterCurrentMonthRecords(updatedRecords) });
       },
 
-      // Check out
-      checkOut: () => {
-        const { checkInTime, records } = get();
-        if (!checkInTime) {
-          set({ error: "No check-in time found" });
-          return;
-        }
+      setLoading: (isLoading: boolean) => set({ isLoading }),
 
-        const now = new Date().toISOString();
-        const todayDate = getTodayDate();
+      setError: (message: string | null) =>
+        set({ error: message, isLoading: false }),
 
-        // Calculate total minutes
-        const checkInDate = new Date(checkInTime);
-        const checkOutDate = new Date(now);
-        const totalMinutes = Math.floor(
-          (checkOutDate.getTime() - checkInDate.getTime()) / 1000 / 60
-        );
-
-        // Update state
-        set({ checkOutTime: now });
-
-        // Update records
-        const updatedRecords = records.map((r) =>
-          r.date === todayDate ? { ...r, checkOutTime: now, totalMinutes } : r
-        );
-
-        set({ records: updatedRecords });
-      },
-
-      // Undo checkout (only works for today's checkout)
-      undoCheckout: () => {
-        const { records, checkInTime } = get();
+      allowAnotherCheckIn: () => {
+        const { records } = get();
         const todayDate = getTodayDate();
         const todayRecord = records.find((r) => r.date === todayDate);
 
-        // Only allow undo if there's a checkout time for today
         if (!todayRecord?.checkOutTime) {
-          set({ error: "No checkout to undo" });
+          set({ error: "No completed checkout found for today" });
           return;
         }
 
-        // Remove checkout time and total minutes
-        set({ 
-          checkOutTime: null,
-          isCheckedIn: true 
-        });
-
-        // Update records
+        // Keep the original entry time — only clear the checkout.
+        // isCheckedIn = true so the button shows "Check Out" right away.
+        const updatedRecord: TimeRecord = {
+          ...todayRecord,
+          checkOutTime: undefined,
+          totalMinutes: undefined,
+        };
         const updatedRecords = records.map((r) =>
-          r.date === todayDate
-            ? { date: r.date, checkInTime: r.checkInTime }
-            : r
+          r.date === todayDate ? updatedRecord : r,
         );
+        set({
+          records: updatedRecords,
+          checkInTime: todayRecord.checkInTime, // original entry time preserved
+          checkOutTime: null,
+          isCheckedIn: true,
+          error: null,
+        });
+      },
 
-        set({ records: updatedRecords });
+      undoCheckout: () => {
+        get().allowAnotherCheckIn();
       },
 
       // Clean old records (remove last month's data on 5th of current month)
@@ -195,7 +251,12 @@ export const useTimeStore = create<TimeState>()(
 
       // Clear all records (for testing/reset)
       clearAllRecords: () => {
-        set({ records: [] });
+        set({
+          records: [],
+          checkInTime: null,
+          checkOutTime: null,
+          isCheckedIn: false,
+        });
       },
 
       // Reset state (for testing or day change)
@@ -216,8 +277,11 @@ export const useTimeStore = create<TimeState>()(
         checkInTime: state.checkInTime,
         checkOutTime: state.checkOutTime,
       }),
-    }
-  )
+      onRehydrateStorage: () => (state) => {
+        state?.setHasHydrated(true);
+      },
+    },
+  ),
 );
 
 // Utility functions for formatting
@@ -234,13 +298,20 @@ export const formatTime = (isoString: string | null): string => {
 export const calculateElapsedTime = (
   checkInTime: string | null,
   checkOutTime: string | null,
-  currentTime: Date
+  currentTime: Date,
 ): string => {
   if (!checkInTime) return "0h 00m 00s";
 
   const start = new Date(checkInTime);
   const end = checkOutTime ? new Date(checkOutTime) : currentTime;
-  const diffMs = end.getTime() - start.getTime();
+  const startTime = start.getTime();
+  const endTime = end.getTime();
+
+  if (Number.isNaN(startTime) || Number.isNaN(endTime)) {
+    return "0h 00m 00s";
+  }
+
+  const diffMs = Math.max(0, endTime - startTime);
   const diffMinutes = Math.floor(diffMs / 1000 / 60);
   const hours = Math.floor(diffMinutes / 60);
   const minutes = diffMinutes % 60;
@@ -252,10 +323,9 @@ export const calculateElapsedTime = (
 
 export const getStatus = (
   isCheckedIn: boolean,
-  checkOutTime: string | null
+  checkOutTime: string | null,
 ): { text: string; color: string } => {
-  if (checkOutTime)
-    return { text: "Logged Out", color: "#9CA3AF" }; // COLORS_LIGHT.textMuted
+  if (checkOutTime) return { text: "Logged Out", color: "#9CA3AF" }; // COLORS_LIGHT.textMuted
   if (isCheckedIn) return { text: "Logged In", color: "#4CAF50" }; // COLORS_LIGHT.success
   return { text: "Not Logged In", color: "#9CA3AF" }; // COLORS_LIGHT.textMuted
 };

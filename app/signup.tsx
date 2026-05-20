@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import {
+    ActivityIndicator,
     KeyboardAvoidingView,
     Platform,
     ScrollView,
@@ -7,41 +8,43 @@ import {
     Text,
     TextInput,
     TouchableOpacity,
-    View
+    View,
 } from "react-native";
 
 import AppButton from "@/components/common/AppButton";
+import { useAuthStore } from "@/stores/useAuthStore";
 import { COLORS_LIGHT } from "@/theme/colors";
+import { createUser, loginUser } from "@/utils/authApi";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useRouter } from "expo-router";
+import { Redirect, useRouter } from "expo-router";
 import { Eye, EyeOff, Lock, Mail, User } from "lucide-react-native";
 import { Controller, useForm } from "react-hook-form";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { z } from "zod";
 
-export const signupSchema = z.object({
-  name: z
-    .string()
-    .min(1, "Name is required")
-    .min(2, "Name must be at least 2 characters"),
+export const signupSchema = z
+  .object({
+    name: z
+      .string()
+      .min(1, "Name is required")
+      .min(2, "Name must be at least 2 characters"),
 
-  email: z
-    .string()
-    .min(1, "Email is required")
-    .email("Enter a valid work email"),
+    email: z
+      .string()
+      .min(1, "Email is required")
+      .email("Enter a valid work email"),
 
-  password: z
-    .string()
-    .min(4, "Password must be at least 4 characters"),
+    password: z.string().min(6, "Password must be at least 6 characters"),
     // .regex(/[A-Z]/, "Password must contain at least one uppercase letter")
     // .regex(/[a-z]/, "Password must contain at least one lowercase letter")
     // .regex(/[0-9]/, "Password must contain at least one number"),
 
-  confirmPassword: z.string().min(1, "Please confirm your password"),
-}).refine((data) => data.password === data.confirmPassword, {
-  message: "Passwords don't match",
-  path: ["confirmPassword"],
-});
+    confirmPassword: z.string().min(1, "Please confirm your password"),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: "Passwords don't match",
+    path: ["confirmPassword"],
+  });
 
 export type SignupFormValues = z.infer<typeof signupSchema>;
 
@@ -49,6 +52,17 @@ export const SignupScreen = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const router = useRouter();
+  const {
+    setSession,
+    login,
+    setAuthLoading,
+    setAuthError,
+    isLoading,
+    error,
+    clearError,
+    hasHydrated,
+    token,
+  } = useAuthStore();
 
   const {
     control,
@@ -65,11 +79,47 @@ export const SignupScreen = () => {
     mode: "onChange",
   });
 
-  const onSubmit = (data: SignupFormValues) => {
-    console.log("SIGNUP DATA:", data);
-    // Navigate to main app tabs
-    router.replace("/(tabs)");
+  const onSubmit = async (data: SignupFormValues) => {
+    clearError();
+    setAuthLoading(true);
+    try {
+      await createUser(data.name, data.email, data.password);
+      const session = await loginUser(data.email, data.password);
+      setSession(session.user, session.token);
+      router.replace("/(tabs)");
+    } catch (err) {
+      // If server is unreachable, fall back to local mock mode
+      const isNetworkError =
+        err instanceof Error &&
+        (err.message.toLowerCase().includes("network") ||
+          err.message.toLowerCase().includes("connect") ||
+          err.message.toLowerCase().includes("timexa server"));
+
+      if (isNetworkError) {
+        login(data.email, data.password);
+        router.replace("/(tabs)");
+        return;
+      }
+
+      setAuthError(
+        err instanceof Error
+          ? err.message
+          : "Unable to create your account. Please try again.",
+      );
+    }
   };
+
+  if (!hasHydrated) {
+    return (
+      <View style={[styles.safe, styles.centered]}>
+        <ActivityIndicator size="large" color={COLORS_LIGHT.primary} />
+      </View>
+    );
+  }
+
+  if (token) {
+    return <Redirect href="/(tabs)" />;
+  }
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -263,15 +313,18 @@ export const SignupScreen = () => {
                 </Text>
               )}
 
+              {error && <Text style={styles.serverError}>{error}</Text>}
+
               <AppButton
-                title="Sign Up"
+                title={isLoading ? "Creating Account..." : "Sign Up"}
                 containerStyle={styles.button}
                 onPress={handleSubmit(onSubmit)}
+                disabled={isLoading}
               />
 
               <View style={styles.footer}>
                 <Text style={styles.footerText}>Already have an account? </Text>
-                <TouchableOpacity 
+                <TouchableOpacity
                   activeOpacity={0.7}
                   onPress={() => router.push("/login")}
                 >
@@ -290,6 +343,10 @@ export const styles = StyleSheet.create({
   safe: {
     flex: 1,
     backgroundColor: COLORS_LIGHT.background,
+  },
+  centered: {
+    alignItems: "center",
+    justifyContent: "center",
   },
 
   keyboardView: {
@@ -313,24 +370,24 @@ export const styles = StyleSheet.create({
     marginBottom: 32,
   },
 
-//   logoWrapper: {
-//     borderRadius: 100,
-//     backgroundColor: COLORS_LIGHT.surface,
-//     alignItems: "center",
-//     justifyContent: "center",
-//     padding: 16,
-//     marginBottom: 24,
-//     shadowColor: "#000",
-//     shadowOffset: { width: 0, height: 2 },
-//     shadowOpacity: 0.1,
-//     shadowRadius: 8,
-//     elevation: 3,
-//   },
+  //   logoWrapper: {
+  //     borderRadius: 100,
+  //     backgroundColor: COLORS_LIGHT.surface,
+  //     alignItems: "center",
+  //     justifyContent: "center",
+  //     padding: 16,
+  //     marginBottom: 24,
+  //     shadowColor: "#000",
+  //     shadowOffset: { width: 0, height: 2 },
+  //     shadowOpacity: 0.1,
+  //     shadowRadius: 8,
+  //     elevation: 3,
+  //   },
 
-//   logo: {
-//     width: 64,
-//     height: 64,
-//   },
+  //   logo: {
+  //     width: 64,
+  //     height: 64,
+  //   },
 
   title: {
     fontSize: 32,
@@ -394,6 +451,18 @@ export const styles = StyleSheet.create({
     marginTop: 4,
     marginBottom: 8,
     marginLeft: 4,
+  },
+
+  serverError: {
+    fontSize: 14,
+    color: COLORS_LIGHT.error,
+    backgroundColor: COLORS_LIGHT.errorBackground,
+    borderWidth: 1,
+    borderColor: "#F8B9BC",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginTop: 4,
   },
 
   /* ---------- Actions ---------- */
