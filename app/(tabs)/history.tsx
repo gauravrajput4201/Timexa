@@ -1,10 +1,10 @@
 import { RecordCard } from "@/components/history/RecordCard";
 import { getBadgeMeta, matchesFilter } from "@/components/history/helpers";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { useTimeStore } from "@/stores/useTimeStore";
+import { useTimeStore, AttendanceStatus } from "@/stores/useTimeStore";
 import { COLORS_LIGHT } from "@/theme/colors";
 import { fetchAttendanceRecords } from "@/utils/attendanceApi";
-import { CalendarDays, Clock3, RotateCw } from "lucide-react-native";
+import { CalendarDays, Clock3 } from "lucide-react-native";
 import React, {
   useCallback,
   useEffect,
@@ -13,7 +13,7 @@ import React, {
   useState,
 } from "react";
 import {
-  ActivityIndicator,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -32,8 +32,8 @@ const FILTERS: { key: FilterKey; label: string }[] = [
 ];
 
 export default function HistoryScreen() {
-  const { records, replaceRecords, setLoading, setError, isLoading, error } =
-    useTimeStore();
+  const { records, replaceRecords, setError, error } = useTimeStore();
+  const [refreshing, setRefreshing] = useState(false);
   const { token } = useAuthStore();
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const hasFetchedOnce = useRef(false);
@@ -56,24 +56,23 @@ export default function HistoryScreen() {
   const fetchFromApi = useCallback(async () => {
     if (!token) return;
 
-    setLoading(true);
+    setRefreshing(true);
     setError(null);
     try {
       const apiRecords = await fetchAttendanceRecords(token);
       if (apiRecords.length > 0) {
         replaceRecords(apiRecords);
-      } else {
-        setLoading(false);
       }
     } catch (err) {
-      setLoading(false);
       setError(
         err instanceof Error
           ? err.message
           : "Unable to refresh attendance records.",
       );
+    } finally {
+      setRefreshing(false);
     }
-  }, [replaceRecords, setError, setLoading, token]);
+  }, [replaceRecords, setError, token]);
 
   // Fetch once on fresh app launch (not on tab switches or re-renders).
   useEffect(() => {
@@ -83,15 +82,12 @@ export default function HistoryScreen() {
     }
   }, [token, fetchFromApi]);
 
-  // Refresh button: always calls API for fresh data.
-  const handleRefresh = useCallback(() => {
-    fetchFromApi();
-  }, [fetchFromApi]);
-
   const totals = useMemo(() => {
     return sortedRecords.reduce(
       (acc, record) => ({
-        days: acc.days + (record.checkOutTime ? 1 : 0),
+        days:
+          acc.days +
+          (record.attendanceStatus === AttendanceStatus.present ? 1 : 0),
         minutes: acc.minutes + (record.totalMinutes || 0),
       }),
       { days: 0, minutes: 0 },
@@ -100,26 +96,20 @@ export default function HistoryScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
-      <View style={styles.container}>
+      <ScrollView
+        style={styles.container}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={fetchFromApi}
+            tintColor={COLORS_LIGHT.primary}
+            colors={[COLORS_LIGHT.primary]}
+          />
+        }
+      >
         <View style={styles.header}>
           <Text style={styles.title}>History</Text>
-          <TouchableOpacity
-            style={styles.headerAction}
-            onPress={handleRefresh}
-            activeOpacity={0.8}
-            disabled={isLoading}
-            accessibilityRole="button"
-            accessibilityLabel="Refresh history"
-          >
-            {isLoading ? (
-              <ActivityIndicator
-                size="small"
-                color={COLORS_LIGHT.primaryForeground}
-              />
-            ) : (
-              <RotateCw size={20} color={COLORS_LIGHT.primaryForeground} />
-            )}
-          </TouchableOpacity>
         </View>
 
         <View style={styles.summaryGrid}>
@@ -167,26 +157,24 @@ export default function HistoryScreen() {
 
         {error && <Text style={styles.errorText}>{error}</Text>}
 
-        <ScrollView style={styles.list} showsVerticalScrollIndicator={false}>
-          {visibleRecords.length === 0 && !isLoading ? (
-            <View style={styles.emptyState}>
-              <CalendarDays size={34} color={COLORS_LIGHT.textMuted} />
-              <Text style={styles.emptyTitle}>No records yet</Text>
-              <Text style={styles.emptyText}>
-                Check in to start tracking your work hours.
-              </Text>
-            </View>
-          ) : (
-            visibleRecords.map((record) => (
-              <RecordCard
-                key={record.id || record.date}
-                record={record}
-                badge={getBadgeMeta(record)}
-              />
-            ))
-          )}
-        </ScrollView>
-      </View>
+        {visibleRecords.length === 0 && !refreshing ? (
+          <View style={styles.emptyState}>
+            <CalendarDays size={34} color={COLORS_LIGHT.textMuted} />
+            <Text style={styles.emptyTitle}>No records yet</Text>
+            <Text style={styles.emptyText}>
+              Check in to start tracking your work hours.
+            </Text>
+          </View>
+        ) : (
+          visibleRecords.map((record) => (
+            <RecordCard
+              key={record.id || record.date}
+              record={record}
+              badge={getBadgeMeta(record)}
+            />
+          ))
+        )}
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -217,9 +205,9 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS_LIGHT.background,
   },
   container: {
-    flex: 1,
     paddingHorizontal: 24,
     paddingTop: 24,
+    paddingBottom: 24,
   },
   header: {
     flexDirection: "row",
@@ -231,15 +219,6 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: "800",
     color: COLORS_LIGHT.textPrimary,
-  },
-  headerAction: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: COLORS_LIGHT.primary,
-    borderWidth: 0,
   },
   summaryGrid: {
     flexDirection: "row",
@@ -324,9 +303,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     marginBottom: 14,
     fontSize: 14,
-  },
-  list: {
-    flex: 1,
   },
   emptyState: {
     alignItems: "center",
