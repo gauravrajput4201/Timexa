@@ -1,10 +1,10 @@
-import { COLORS_LIGHT } from '@/theme/colors';
-import { useAuthStore } from '@/stores/useAuthStore';
-import { Redirect, Tabs } from 'expo-router';
-import { History, Home, User } from 'lucide-react-native';
-import React from 'react';
-import { ActivityIndicator, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useAuthStore } from "@/stores/useAuthStore";
+import { COLORS_LIGHT } from "@/theme/colors";
+import { Redirect, Tabs } from "expo-router";
+import { History, Home, User } from "lucide-react-native";
+import React from "react";
+import { ActivityIndicator, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function TabLayout() {
   const insets = useSafeAreaInsets();
@@ -21,7 +21,7 @@ export default function TabLayout() {
   if (!token) {
     return <Redirect href="/login" />;
   }
-  
+
   return (
     <Tabs
       screenOptions={{
@@ -126,8 +126,8 @@ export default function TabLayout() {
           ),
         }}
       />
+      {/* Settings is accessed via the icon in the Home header, not via a tab */}
+      <Tabs.Screen name="settings" options={{ href: null }} />
     </Tabs>
   );
 }
-
-
