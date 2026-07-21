@@ -1,8 +1,9 @@
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { COLORS_LIGHT } from "@/theme/colors";
 import { requestNotificationPermission } from "@/utils/notificationService";
+import { useFocusEffect } from "expo-router";
 import { Bell } from "lucide-react-native";
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useState } from "react";
 import {
     Alert,
     KeyboardAvoidingView,
@@ -31,11 +32,13 @@ export default function SettingsScreen() {
   const [mins, setMins] = useState(String(initial.minutes).padStart(2, "0"));
   const [saved, setSaved] = useState(false);
 
-  useEffect(() => {
-    const parts = minutesToParts(workHoursMinutes);
-    setHours(String(parts.hours));
-    setMins(String(parts.minutes).padStart(2, "0"));
-  }, [workHoursMinutes]);
+  useFocusEffect(
+    useCallback(() => {
+      const parts = minutesToParts(workHoursMinutes);
+      setHours(String(parts.hours));
+      setMins(String(parts.minutes).padStart(2, "0"));
+    }, [workHoursMinutes]),
+  );
 
   const handleSave = async () => {
     const h = parseInt(hours, 10);

@@ -2,7 +2,7 @@ import { useAuthStore } from "@/stores/useAuthStore";
 import { useTimeStore } from "@/stores/useTimeStore";
 import { COLORS_LIGHT } from "@/theme/colors";
 import { useRouter } from "expo-router";
-import { BadgeCheck, IdCard, LogOut, Mail, Shield, User } from "lucide-react-native";
+import { BadgeCheck, LogOut, Mail, User } from "lucide-react-native";
 import React from "react";
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -58,22 +58,6 @@ export default function ProfileScreen() {
             icon={<User size={20} color={COLORS_LIGHT.primary} />}
             label="Full Name"
             value={user?.name || "Not available"}
-          />
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Account</Text>
-
-          <InfoRow
-            icon={<Shield size={20} color={COLORS_LIGHT.primary} />}
-            label="Role"
-            value={user?.role || "user"}
-          />
-          <InfoRow
-            icon={<IdCard size={20} color={COLORS_LIGHT.primary} />}
-            label="User ID"
-            value={user?.id || "Not available"}
-            compact
           />
         </View>
 
