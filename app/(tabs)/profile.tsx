@@ -4,19 +4,26 @@ import { COLORS_LIGHT } from "@/theme/colors";
 import { useRouter } from "expo-router";
 import { BadgeCheck, LogOut, Mail, User } from "lucide-react-native";
 import React from "react";
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import {
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function ProfileScreen() {
   const { user, logout } = useAuthStore();
   const { clearAllRecords } = useTimeStore();
   const router = useRouter();
-  const initials = user?.name
-    ?.split(" ")
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase())
-    .join("") || "U";
+  const initials =
+    user?.name
+      ?.split(" ")
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase())
+      .join("") || "U";
 
   const handleLogout = () => {
     logout();
@@ -86,7 +93,10 @@ function InfoRow({
       <View style={styles.iconBox}>{icon}</View>
       <View style={styles.infoContent}>
         <Text style={styles.label}>{label}</Text>
-        <Text style={[styles.value, compact && styles.compactValue]} numberOfLines={2}>
+        <Text
+          style={[styles.value, compact && styles.compactValue]}
+          numberOfLines={2}
+        >
           {value}
         </Text>
       </View>
