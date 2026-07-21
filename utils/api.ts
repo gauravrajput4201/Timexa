@@ -28,9 +28,9 @@ export class ApiError extends Error {
 
 const getDevHost = () => {
   const manifest = Constants.manifest as { debuggerHost?: string } | null;
-  const manifest2 = Constants.manifest2 as
-    | { extra?: { expoClient?: { hostUri?: string } } }
-    | null;
+  const manifest2 = Constants.manifest2 as {
+    extra?: { expoClient?: { hostUri?: string } };
+  } | null;
   const hostUri =
     Constants.expoConfig?.hostUri ||
     manifest2?.extra?.expoClient?.hostUri ||
@@ -68,7 +68,8 @@ export async function apiRequest<T>(
     response = await fetch(`${API_BASE_URL}${path}`, {
       method: options.method || "GET",
       headers,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      body:
+        options.body === undefined ? undefined : JSON.stringify(options.body),
     });
     json = (await response.json()) as ApiEnvelope<T>;
   } catch {
