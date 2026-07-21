@@ -1,24 +1,25 @@
 import React, { useState } from "react";
 import {
-  Image,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Image,
+    KeyboardAvoidingView,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from "react-native";
 
 import AppButton from "@/components/common/AppButton";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { COLORS_LIGHT } from "@/theme/colors";
+import { loginUser } from "@/utils/authApi";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useRouter } from "expo-router";
+import { Redirect, useRouter } from "expo-router";
 import { Eye, EyeOff, Lock, Mail } from "lucide-react-native";
 import { Controller, useForm } from "react-hook-form";
-
 
 import { SafeAreaView } from "react-native-safe-area-context";
 import { z } from "zod";
@@ -29,16 +30,25 @@ export const loginSchema = z.object({
     .min(1, "Email is required")
     .email("Enter a valid work email"),
 
-  password: z.string().min(4, "Password must be at least 4 characters"),
+  password: z.string().min(6, "Password must be at least 6 characters"),
 });
 
 export type LoginFormValues = z.infer<typeof loginSchema>;
 
 export const LoginScreen = () => {
   const [showPassword, setShowPassword] = useState(false);
-  const [isKeyboardVisible, setKeyboardVisible] = useState(false);
   const router = useRouter();
-  const { login } = useAuthStore();
+  const {
+    setSession,
+    login,
+    setAuthLoading,
+    setAuthError,
+    isLoading,
+    error,
+    clearError,
+    hasHydrated,
+    token,
+  } = useAuthStore();
 
   const {
     control,
@@ -54,12 +64,47 @@ export const LoginScreen = () => {
   });
 
   const onSubmit = async (data: LoginFormValues) => {
-    const success = await login(data.email, data.password);
-    if (success) {
+    clearError();
+    setAuthLoading(true);
+    try {
+      // Try real API login first
+      const session = await loginUser(data.email, data.password);
+      setSession(session.user, session.token);
       router.replace("/(tabs)");
+    } catch (err) {
+      // If server is unreachable (network error / status 0), fall back to
+      // local mock login so the app remains usable without a backend.
+      const isNetworkError =
+        err instanceof Error &&
+        (err.message.toLowerCase().includes("network") ||
+          err.message.toLowerCase().includes("connect") ||
+          err.message.toLowerCase().includes("timexa server"));
+
+      if (isNetworkError) {
+        login(data.email, data.password);
+        router.replace("/(tabs)");
+        return;
+      }
+
+      setAuthError(
+        err instanceof Error
+          ? err.message
+          : "Unable to log in. Please try again.",
+      );
     }
   };
 
+  if (!hasHydrated) {
+    return (
+      <View style={[styles.safe, styles.centered]}>
+        <ActivityIndicator size="large" color={COLORS_LIGHT.primary} />
+      </View>
+    );
+  }
+
+  if (token) {
+    return <Redirect href="/(tabs)" />;
+  }
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -75,16 +120,14 @@ export const LoginScreen = () => {
         >
           <View style={styles.container}>
             {/* Header */}
-            <View style={[styles.header,  styles.headerCompact]}>
-             
-                <View style={styles.logoWrapper}>
-                  <Image
-                    source={require("@/assets/images/brandLogo.png")}
-                    style={styles.logo}
-                    resizeMode="contain"
-                  />
-                </View>
-              
+            <View style={[styles.header, styles.headerCompact]}>
+              <View style={styles.logoWrapper}>
+                <Image
+                  source={require("@/assets/images/brandLogo.png")}
+                  style={styles.logo}
+                  resizeMode="contain"
+                />
+              </View>
 
               <Text style={styles.title}>Welcome back</Text>
               <Text style={styles.subtitle}>
@@ -101,7 +144,10 @@ export const LoginScreen = () => {
                 name="email"
                 render={({ field: { onChange, onBlur, value } }) => (
                   <View
-                    style={[styles.inputWrapper, errors.email && styles.inputError]}
+                    style={[
+                      styles.inputWrapper,
+                      errors.email && styles.inputError,
+                    ]}
                   >
                     <Mail
                       size={20}
@@ -174,15 +220,20 @@ export const LoginScreen = () => {
                 <Text style={styles.forgot}>Forgot Password?</Text>
               </TouchableOpacity>
 
+              {error && <Text style={styles.serverError}>{error}</Text>}
+
               <AppButton
-                title="Log In"
+                title={isLoading ? "Logging In..." : "Log In"}
                 containerStyle={styles.button}
                 onPress={handleSubmit(onSubmit)}
+                disabled={isLoading}
               />
 
               <View style={styles.footer}>
-                <Text style={styles.footerText}>Don't have an account? </Text>
-                <TouchableOpacity 
+                <Text style={styles.footerText}>
+                  Don&apos;t have an account?{" "}
+                </Text>
+                <TouchableOpacity
                   activeOpacity={0.7}
                   onPress={() => router.push("/signup")}
                 >
@@ -197,11 +248,14 @@ export const LoginScreen = () => {
   );
 };
 
-
 export const styles = StyleSheet.create({
   safe: {
     flex: 1,
     backgroundColor: COLORS_LIGHT.background,
+  },
+  centered: {
+    alignItems: "center",
+    justifyContent: "center",
   },
 
   keyboardView: {
@@ -319,6 +373,18 @@ export const styles = StyleSheet.create({
     marginTop: 4,
     marginBottom: 8,
     marginLeft: 4,
+  },
+
+  serverError: {
+    fontSize: 14,
+    color: COLORS_LIGHT.error,
+    backgroundColor: COLORS_LIGHT.errorBackground,
+    borderWidth: 1,
+    borderColor: "#F8B9BC",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginTop: 4,
   },
 
   /* ---------- Actions ---------- */

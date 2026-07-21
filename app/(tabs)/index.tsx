@@ -1,18 +1,26 @@
+import { useAuthStore } from "@/stores/useAuthStore";
 import {
-  calculateElapsedTime,
-  formatTime,
-  getStatus,
-  useTimeStore,
+    calculateElapsedTime,
+    formatTime,
+    getStatus,
+    useTimeStore,
 } from "@/stores/useTimeStore";
 import { COLORS_LIGHT } from "@/theme/colors";
-import { Clock, LogIn, LogOut, Settings } from "lucide-react-native";
-import React, { useEffect } from "react";
+import { isNetworkError } from "@/utils/api";
 import {
-  ActivityIndicator,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    checkInUser,
+    checkOutUser,
+    fetchAttendanceRecords,
+} from "@/utils/attendanceApi";
+import { Clock, LogIn, LogOut, Settings } from "lucide-react-native";
+import React, { useCallback, useEffect } from "react";
+import {
+    ActivityIndicator,
+    AppState,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -22,12 +30,19 @@ export default function HomeScreen() {
     checkInTime,
     checkOutTime,
     isLoading,
+    error,
+    hasHydrated,
     loadTodayData,
+    replaceRecords,
+    upsertRecord,
+    setLoading,
+    setError,
+    undoCheckout,
     checkIn,
     checkOut,
-    undoCheckout,
-    cleanOldRecords,
+    markPendingSync,
   } = useTimeStore();
+  const { token } = useAuthStore();
 
   // Get current date
   const now = new Date();
@@ -37,27 +52,187 @@ export default function HomeScreen() {
     day: "numeric",
   });
 
-  // Load today's data on mount and clean old records
+  // Silently sync attendance from server in the background.
+  // Does nothing if there is no token (local/mock mode).
+  const syncAttendance = useCallback(async () => {
+    if (!token) return;
+    try {
+      const records = await fetchAttendanceRecords(token);
+      replaceRecords(records);
+    } catch {
+      // Sync failure is non-fatal — local records remain visible
+    }
+  }, [replaceRecords, token]);
+
+  // Push a locally-saved pending record to the server, then pull the latest.
+  // Reads live store state so this callback is stable (doesn't depend on records).
+  const syncPendingToday = useCallback(async () => {
+    if (!token) return;
+    const today = new Date().toISOString().split("T")[0];
+    const { records } = useTimeStore.getState();
+    const pending = records.find((r) => r.date === today && r.pendingSync);
+    if (!pending) return;
+
+    try {
+      if (!pending.id) {
+        // Check-in was offline — push it first
+        const checked = await checkInUser(token);
+        if (pending.checkOutTime) {
+          // Persist server ID + local checkout before attempting checkout push.
+          // If checkout fails, next retry sees pending.id and only retries checkout.
+          upsertRecord({
+            ...checked,
+            checkOutTime: pending.checkOutTime,
+            totalMinutes: pending.totalMinutes,
+            pendingSync: true,
+          });
+          const finished = await checkOutUser(token);
+          upsertRecord({ ...finished, pendingSync: false });
+        } else {
+          upsertRecord({ ...checked, pendingSync: false });
+        }
+      } else if (pending.checkOutTime) {
+        // Check-in reached server; only checkout was offline
+        const finished = await checkOutUser(token);
+        upsertRecord({ ...finished, pendingSync: false });
+      } else {
+        // Undo checkout was done offline — push re-check-in (fire-and-forget)
+        await checkInUser(token);
+        upsertRecord({ ...pending, pendingSync: false });
+      }
+    } catch {
+      // Still unreachable — pendingSync stays true for next retry
+    }
+  }, [token, upsertRecord]);
+
+  // After hydration: load today, push any pending, then pull latest from server
   useEffect(() => {
-    loadTodayData();
-    cleanOldRecords(); // Removes last month's data on 5th of month
-  }, []);
+    if (hasHydrated) {
+      loadTodayData();
+      syncPendingToday().then(() => syncAttendance());
+    }
+  }, [hasHydrated, loadTodayData, syncPendingToday, syncAttendance]);
+
+  // Re-sync when app returns to foreground
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        syncPendingToday().then(() => syncAttendance());
+      }
+    });
+    return () => sub.remove();
+  }, [syncPendingToday, syncAttendance]);
+
+  // Show loading spinner while hydrating
+  if (!hasHydrated) {
+    return (
+      <SafeAreaView style={styles.safe}>
+        <View style={[styles.container, { justifyContent: "center" }]}>
+          <ActivityIndicator size="large" color={COLORS_LIGHT.primary} />
+          <Text style={{ marginTop: 16, color: COLORS_LIGHT.textSecondary }}>
+            Loading...
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   const status = getStatus(isCheckedIn, checkOutTime);
-  
+
   // Calculate elapsed time on every render (no timer needed)
   const elapsedTime = calculateElapsedTime(
     checkInTime,
     checkOutTime,
-    new Date() // Always use current time for live calculation
+    new Date(),
   );
 
-  const handleButtonPress = () => {
-    if (checkOutTime) return; // Already completed
+  const submitCheckIn = async () => {
+    setLoading(true);
+    setError(null);
+
+    if (token) {
+      try {
+        const record = await checkInUser(token);
+        upsertRecord(record);
+        return;
+      } catch (err) {
+        if (isNetworkError(err)) {
+          checkIn();
+          markPendingSync(new Date().toISOString().split("T")[0]);
+          setLoading(false);
+          return;
+        }
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Unable to check in. Please try again.",
+        );
+        return;
+      }
+    }
+
+    // Offline / mock mode — record locally
+    checkIn();
+    setLoading(false);
+  };
+
+  const submitCheckOut = async () => {
+    setLoading(true);
+    setError(null);
+
+    if (token) {
+      try {
+        const record = await checkOutUser(token);
+        upsertRecord(record);
+        return;
+      } catch (err) {
+        if (isNetworkError(err)) {
+          checkOut();
+          markPendingSync(new Date().toISOString().split("T")[0]);
+          setLoading(false);
+          return;
+        }
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Unable to check out. Please try again.",
+        );
+        return;
+      }
+    }
+
+    // Offline / mock mode — record locally
+    checkOut();
+    setLoading(false);
+  };
+
+  const handleUndoCheckout = async () => {
+    // 1. Restore local state immediately — entry time is preserved, isCheckedIn = true
+    undoCheckout();
+
+    // 2. If a real token exists, tell the backend the user is checking in again.
+    //    We do NOT call upsertRecord with the API response because logToRecord
+    //    already maps checkInTime to firstSession.checkIn, so the original entry
+    //    time is preserved. Just fire-and-forget; ignore API errors silently
+    //    because local state is already correct.
+    if (token) {
+      try {
+        await checkInUser(token);
+      } catch (err) {
+        if (isNetworkError(err)) {
+          markPendingSync(new Date().toISOString().split("T")[0]);
+        }
+        // Non-fatal either way — local state already shows "checked in"
+      }
+    }
+  };
+
+  const handleButtonPress = async () => {
+    if (checkOutTime) return;
     if (isCheckedIn) {
-      checkOut();
+      await submitCheckOut();
     } else {
-      checkIn();
+      await submitCheckIn();
     }
   };
 
@@ -120,16 +295,18 @@ export default function HomeScreen() {
           )}
         </TouchableOpacity>
 
-        {/* Undo Button - Only show if checked out today */}
         {checkOutTime && (
           <TouchableOpacity
             style={styles.undoButton}
-            onPress={undoCheckout}
+            onPress={handleUndoCheckout}
             activeOpacity={0.7}
+            disabled={isLoading}
           >
             <Text style={styles.undoText}>Undo Checkout</Text>
           </TouchableOpacity>
         )}
+
+        {error && <Text style={styles.errorText}>{error}</Text>}
 
         {/* Stats Card */}
         <View style={styles.statsCard}>
@@ -276,7 +453,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  // Undo Button
   undoButton: {
     alignSelf: "center",
     paddingVertical: 12,
@@ -291,6 +467,17 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "600",
     color: COLORS_LIGHT.warning,
+  },
+
+  errorText: {
+    alignSelf: "center",
+    color: COLORS_LIGHT.error,
+    backgroundColor: COLORS_LIGHT.errorBackground,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    textAlign: "center",
+    fontSize: 14,
   },
 
   // Stats Card

@@ -1,12 +1,26 @@
 import { COLORS_LIGHT } from '@/theme/colors';
-import { Tabs } from 'expo-router';
+import { useAuthStore } from '@/stores/useAuthStore';
+import { Redirect, Tabs } from 'expo-router';
 import { History, Home, User } from 'lucide-react-native';
 import React from 'react';
-import { View } from 'react-native';
+import { ActivityIndicator, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function TabLayout() {
   const insets = useSafeAreaInsets();
+  const { hasHydrated, token } = useAuthStore();
+
+  if (!hasHydrated) {
+    return (
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+        <ActivityIndicator size="large" color={COLORS_LIGHT.primary} />
+      </View>
+    );
+  }
+
+  if (!token) {
+    return <Redirect href="/login" />;
+  }
   
   return (
     <Tabs
@@ -115,6 +129,5 @@ export default function TabLayout() {
     </Tabs>
   );
 }
-
 
 
