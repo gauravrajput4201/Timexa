@@ -2,21 +2,28 @@ import { useAuthStore } from "@/stores/useAuthStore";
 import { useTimeStore } from "@/stores/useTimeStore";
 import { COLORS_LIGHT } from "@/theme/colors";
 import { useRouter } from "expo-router";
-import { BadgeCheck, IdCard, LogOut, Mail, Shield, User } from "lucide-react-native";
+import { BadgeCheck, LogOut, Mail, User } from "lucide-react-native";
 import React from "react";
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import {
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function ProfileScreen() {
   const { user, logout } = useAuthStore();
   const { clearAllRecords } = useTimeStore();
   const router = useRouter();
-  const initials = user?.name
-    ?.split(" ")
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase())
-    .join("") || "U";
+  const initials =
+    user?.name
+      ?.split(" ")
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase())
+      .join("") || "U";
 
   const handleLogout = () => {
     logout();
@@ -61,22 +68,6 @@ export default function ProfileScreen() {
           />
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Account</Text>
-
-          <InfoRow
-            icon={<Shield size={20} color={COLORS_LIGHT.primary} />}
-            label="Role"
-            value={user?.role || "user"}
-          />
-          <InfoRow
-            icon={<IdCard size={20} color={COLORS_LIGHT.primary} />}
-            label="User ID"
-            value={user?.id || "Not available"}
-            compact
-          />
-        </View>
-
         <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
           <LogOut size={20} color={COLORS_LIGHT.error} />
           <Text style={styles.logoutText}>Logout</Text>
@@ -102,7 +93,10 @@ function InfoRow({
       <View style={styles.iconBox}>{icon}</View>
       <View style={styles.infoContent}>
         <Text style={styles.label}>{label}</Text>
-        <Text style={[styles.value, compact && styles.compactValue]} numberOfLines={2}>
+        <Text
+          style={[styles.value, compact && styles.compactValue]}
+          numberOfLines={2}
+        >
           {value}
         </Text>
       </View>

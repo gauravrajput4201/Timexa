@@ -1,26 +1,33 @@
 import { useAuthStore } from "@/stores/useAuthStore";
+import { useSettingsStore } from "@/stores/useSettingsStore";
 import {
-    calculateElapsedTime,
-    formatTime,
-    getStatus,
-    useTimeStore,
+  calculateElapsedTime,
+  formatTime,
+  getStatus,
+  useTimeStore,
 } from "@/stores/useTimeStore";
 import { COLORS_LIGHT } from "@/theme/colors";
 import { isNetworkError } from "@/utils/api";
 import {
-    checkInUser,
-    checkOutUser,
-    fetchAttendanceRecords,
+  checkInUser,
+  checkOutUser,
+  fetchAttendanceRecords,
 } from "@/utils/attendanceApi";
+import {
+  cancelShiftEndNotification,
+  requestNotificationPermission,
+  scheduleShiftEndNotification,
+} from "@/utils/notificationService";
+import { router } from "expo-router";
 import { Clock, LogIn, LogOut, Settings } from "lucide-react-native";
 import React, { useCallback, useEffect } from "react";
 import {
-    ActivityIndicator,
-    AppState,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  AppState,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -43,6 +50,11 @@ export default function HomeScreen() {
     markPendingSync,
   } = useTimeStore();
   const { token } = useAuthStore();
+  const {
+    workHoursMinutes,
+    scheduledNotificationId,
+    setScheduledNotificationId,
+  } = useSettingsStore();
 
   // Get current date
   const now = new Date();
@@ -154,11 +166,17 @@ export default function HomeScreen() {
       try {
         const record = await checkInUser(token);
         upsertRecord(record);
+        await scheduleNotificationAfterCheckIn(record.checkInTime);
         return;
       } catch (err) {
         if (isNetworkError(err)) {
           checkIn();
           markPendingSync(new Date().toISOString().split("T")[0]);
+          // Use the time the store just recorded, not a second new Date() call
+          const { checkInTime: storedCheckIn } = useTimeStore.getState();
+          await scheduleNotificationAfterCheckIn(
+            storedCheckIn ?? new Date().toISOString(),
+          );
           setLoading(false);
           return;
         }
@@ -173,12 +191,29 @@ export default function HomeScreen() {
 
     // Offline / mock mode — record locally
     checkIn();
+    // Use the time the store just recorded, not a second new Date() call
+    const { checkInTime: storedCheckIn } = useTimeStore.getState();
+    await scheduleNotificationAfterCheckIn(
+      storedCheckIn ?? new Date().toISOString(),
+    );
     setLoading(false);
+  };
+
+  /** Schedule a shift-end notification and persist its id. */
+  const scheduleNotificationAfterCheckIn = async (checkInIso: string) => {
+    const granted = await requestNotificationPermission();
+    if (!granted) return;
+    const id = await scheduleShiftEndNotification(checkInIso, workHoursMinutes);
+    setScheduledNotificationId(id);
   };
 
   const submitCheckOut = async () => {
     setLoading(true);
     setError(null);
+
+    // Cancel the pending shift-end notification on checkout
+    await cancelShiftEndNotification(scheduledNotificationId);
+    setScheduledNotificationId(null);
 
     if (token) {
       try {
@@ -210,7 +245,12 @@ export default function HomeScreen() {
     // 1. Restore local state immediately — entry time is preserved, isCheckedIn = true
     undoCheckout();
 
-    // 2. If a real token exists, tell the backend the user is checking in again.
+    // 2. Reschedule the shift-end notification from the original check-in time
+    if (checkInTime) {
+      await scheduleNotificationAfterCheckIn(checkInTime);
+    }
+
+    // 3. If a real token exists, tell the backend the user is checking in again.
     //    We do NOT call upsertRecord with the API response because logToRecord
     //    already maps checkInTime to firstSession.checkIn, so the original entry
     //    time is preserved. Just fire-and-forget; ignore API errors silently
@@ -242,7 +282,10 @@ export default function HomeScreen() {
         {/* Header */}
         <View style={styles.header}>
           <Text style={styles.headerDate}>Today</Text>
-          <TouchableOpacity style={styles.settingsButton}>
+          <TouchableOpacity
+            style={styles.settingsButton}
+            onPress={() => router.push("/(tabs)/settings")}
+          >
             <Settings size={22} color={COLORS_LIGHT.textPrimary} />
           </TouchableOpacity>
         </View>
