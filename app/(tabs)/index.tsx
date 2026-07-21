@@ -1,24 +1,26 @@
 import { useAuthStore } from "@/stores/useAuthStore";
 import {
-  calculateElapsedTime,
-  formatTime,
-  getStatus,
-  useTimeStore,
+    calculateElapsedTime,
+    formatTime,
+    getStatus,
+    useTimeStore,
 } from "@/stores/useTimeStore";
 import { COLORS_LIGHT } from "@/theme/colors";
+import { isNetworkError } from "@/utils/api";
 import {
-  checkInUser,
-  checkOutUser,
-  fetchAttendanceRecords,
+    checkInUser,
+    checkOutUser,
+    fetchAttendanceRecords,
 } from "@/utils/attendanceApi";
 import { Clock, LogIn, LogOut, Settings } from "lucide-react-native";
 import React, { useCallback, useEffect } from "react";
 import {
-  ActivityIndicator,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    AppState,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -38,6 +40,7 @@ export default function HomeScreen() {
     undoCheckout,
     checkIn,
     checkOut,
+    markPendingSync,
   } = useTimeStore();
   const { token } = useAuthStore();
 
@@ -61,13 +64,64 @@ export default function HomeScreen() {
     }
   }, [replaceRecords, token]);
 
-  // After hydration: load today from local storage, then background-sync with server
+  // Push a locally-saved pending record to the server, then pull the latest.
+  // Reads live store state so this callback is stable (doesn't depend on records).
+  const syncPendingToday = useCallback(async () => {
+    if (!token) return;
+    const today = new Date().toISOString().split("T")[0];
+    const { records } = useTimeStore.getState();
+    const pending = records.find((r) => r.date === today && r.pendingSync);
+    if (!pending) return;
+
+    try {
+      if (!pending.id) {
+        // Check-in was offline — push it first
+        const checked = await checkInUser(token);
+        if (pending.checkOutTime) {
+          // Persist server ID + local checkout before attempting checkout push.
+          // If checkout fails, next retry sees pending.id and only retries checkout.
+          upsertRecord({
+            ...checked,
+            checkOutTime: pending.checkOutTime,
+            totalMinutes: pending.totalMinutes,
+            pendingSync: true,
+          });
+          const finished = await checkOutUser(token);
+          upsertRecord({ ...finished, pendingSync: false });
+        } else {
+          upsertRecord({ ...checked, pendingSync: false });
+        }
+      } else if (pending.checkOutTime) {
+        // Check-in reached server; only checkout was offline
+        const finished = await checkOutUser(token);
+        upsertRecord({ ...finished, pendingSync: false });
+      } else {
+        // Undo checkout was done offline — push re-check-in (fire-and-forget)
+        await checkInUser(token);
+        upsertRecord({ ...pending, pendingSync: false });
+      }
+    } catch {
+      // Still unreachable — pendingSync stays true for next retry
+    }
+  }, [token, upsertRecord]);
+
+  // After hydration: load today, push any pending, then pull latest from server
   useEffect(() => {
     if (hasHydrated) {
       loadTodayData();
-      syncAttendance();
+      syncPendingToday().then(() => syncAttendance());
     }
-  }, [hasHydrated, loadTodayData, syncAttendance]);
+  }, [hasHydrated, loadTodayData, syncPendingToday, syncAttendance]);
+
+  // Re-sync when app returns to foreground
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        syncPendingToday().then(() => syncAttendance());
+      }
+    });
+    return () => sub.remove();
+  }, [syncPendingToday, syncAttendance]);
 
   // Show loading spinner while hydrating
   if (!hasHydrated) {
@@ -96,13 +150,18 @@ export default function HomeScreen() {
     setLoading(true);
     setError(null);
 
-    // If a real token exists, try the API first
     if (token) {
       try {
         const record = await checkInUser(token);
         upsertRecord(record);
         return;
       } catch (err) {
+        if (isNetworkError(err)) {
+          checkIn();
+          markPendingSync(new Date().toISOString().split("T")[0]);
+          setLoading(false);
+          return;
+        }
         setError(
           err instanceof Error
             ? err.message
@@ -127,6 +186,12 @@ export default function HomeScreen() {
         upsertRecord(record);
         return;
       } catch (err) {
+        if (isNetworkError(err)) {
+          checkOut();
+          markPendingSync(new Date().toISOString().split("T")[0]);
+          setLoading(false);
+          return;
+        }
         setError(
           err instanceof Error
             ? err.message
@@ -153,8 +218,11 @@ export default function HomeScreen() {
     if (token) {
       try {
         await checkInUser(token);
-      } catch {
-        // Non-fatal: local state already shows the correct "checked in" view
+      } catch (err) {
+        if (isNetworkError(err)) {
+          markPendingSync(new Date().toISOString().split("T")[0]);
+        }
+        // Non-fatal either way — local state already shows "checked in"
       }
     }
   };

@@ -1,8 +1,9 @@
 import { RecordCard } from "@/components/history/RecordCard";
 import { getBadgeMeta, matchesFilter } from "@/components/history/helpers";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { useTimeStore, AttendanceStatus } from "@/stores/useTimeStore";
+import { AttendanceStatus, useTimeStore } from "@/stores/useTimeStore";
 import { COLORS_LIGHT } from "@/theme/colors";
+import { isNetworkError } from "@/utils/api";
 import { fetchAttendanceRecords } from "@/utils/attendanceApi";
 import { CalendarDays, Clock3 } from "lucide-react-native";
 import React, {
@@ -64,11 +65,15 @@ export default function HistoryScreen() {
         replaceRecords(apiRecords);
       }
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Unable to refresh attendance records.",
-      );
+      // Silently ignore unreachable-server errors — local records stay visible.
+      // Surface real API errors (auth failures, server errors, etc.) only.
+      if (!isNetworkError(err)) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Unable to refresh attendance records.",
+        );
+      }
     } finally {
       setRefreshing(false);
     }

@@ -88,3 +88,6 @@ export async function apiRequest<T>(
 
   return json;
 }
+
+export const isNetworkError = (err: unknown): boolean =>
+  err instanceof ApiError && err.status === 0;

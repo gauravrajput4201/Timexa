@@ -19,6 +19,7 @@ export interface TimeRecord {
   totalMinutes?: number;
   entryExitTotalMinutes?: number;
   sessions?: TimeSession[];
+  pendingSync?: boolean; // true when saved locally while API was unreachable
 }
 
 export interface TimeSession {
@@ -52,6 +53,7 @@ interface TimeState {
   getAllRecords: () => TimeRecord[]; // For API sync
   clearAllRecords: () => void; // For testing/reset
   setHasHydrated: (state: boolean) => void;
+  markPendingSync: (date: string) => void;
 }
 
 const getTodayDate = (): string => {
@@ -183,9 +185,27 @@ export const useTimeStore = create<TimeState>()(
         }
       },
 
-      replaceRecords: (records: TimeRecord[]) => {
-        set({ records, isLoading: false, error: null });
+      replaceRecords: (incoming: TimeRecord[]) => {
+        const { records: current } = get();
+        // Keep local pending records that haven't reached the server yet
+        const pendingNotInApi = current.filter(
+          (r) => r.pendingSync && !incoming.some((a) => a.date === r.date),
+        );
+        set({
+          records: [...incoming, ...pendingNotInApi],
+          isLoading: false,
+          error: null,
+        });
         get().loadTodayData();
+      },
+
+      markPendingSync: (date: string) => {
+        const { records } = get();
+        set({
+          records: records.map((r) =>
+            r.date === date ? { ...r, pendingSync: true } : r,
+          ),
+        });
       },
 
       upsertRecord: (record: TimeRecord) => {
